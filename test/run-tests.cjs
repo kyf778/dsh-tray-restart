@@ -67,6 +67,37 @@ log('\n[3] apply');
   assert('reports state=applied', /state\s*:\s*applied/.test(b.stdout), b.stdout);
 }
 
+// ── 3b. the patched header must satisfy Electron's real pickle layout ───────
+// Reading the archive back through asar.cjs/readHeader() cannot catch a wrong
+// [8..11] word, because readHeader() only consults [12..15]. Electron reads the
+// blob at [8..] as a Pickle whose payload size is [8..11]; zeroing it makes the
+// app fall back to default_app.asar (window titled "Electron", welcome page).
+log('\n[3b] patched header layout (Electron semantics)');
+{
+  const buf = fs.readFileSync(work);
+  const u0 = buf.readUInt32LE(0);
+  const u4 = buf.readUInt32LE(4);
+  const u8 = buf.readUInt32LE(8);
+  const u12 = buf.readUInt32LE(12);
+  assert('u0 is the pickle size marker (4)', u0 === 4, `u0=${u0}`);
+  assert('u12 is the JSON byte length', u12 === Buffer.byteLength(buf.subarray(16, 16 + u12).toString('utf8')), `u12=${u12}`);
+  assert('u8 == u12 + 4 (inner pickle payload size)', u8 === u12 + 4, `u8=${u8} u12=${u12}`);
+  assert('u4 == u8 + 4 (total header blob size)', u4 === u8 + 4, `u4=${u4} u8=${u8}`);
+  const blob = buf.subarray(8, 8 + u4);
+  assert('header blob is complete', blob.length === u4, `${blob.length} != ${u4}`);
+  assert('inner payload size matches blob length', blob.readUInt32LE(0) === blob.length - 4,
+    `inner=${blob.readUInt32LE(0)} blob-4=${blob.length - 4}`);
+  const strLen = blob.readUInt32LE(4);
+  assert('Electron-style header read yields the files table',
+    !!JSON.parse(blob.subarray(8, 8 + strLen).toString('utf8')).files);
+  // The invariants must match the pristine original's, not just be self-consistent.
+  const orig = fs.readFileSync(original);
+  assert('word layout matches the pristine original',
+    orig.readUInt32LE(4) - orig.readUInt32LE(8) === u4 - u8 &&
+    orig.readUInt32LE(8) - orig.readUInt32LE(12) === u8 - u12,
+    `orig deltas ${orig.readUInt32LE(4) - orig.readUInt32LE(8)}/${orig.readUInt32LE(8) - orig.readUInt32LE(12)} vs patched ${u4 - u8}/${u8 - u12}`);
+}
+
 // ── 4. only lib/main.js changed ──────────────────────────────────────────────
 log('\n[4] blast radius');
 {

@@ -10,18 +10,30 @@ const crypto = require('node:crypto');
 const ROOT = path.join(__dirname, '..');
 const { readHeader, walk, readEntry, rewrite } = require(path.join(ROOT, 'asar.cjs'));
 
-/** Locate a real app.asar to test against, or null. */
+/**
+ * Locate a *pristine* (unpatched) app.asar to test against, or null.
+ *
+ * The installed app.asar may already carry the patch - and if it does, it is
+ * not a valid baseline for "status reports absent" or "exactly one entry
+ * changed". A `restore` backup is the pristine copy in that case, so prefer it
+ * and only fall back to the live file when no backup exists.
+ */
 function findAsar() {
+  if (process.env.DSH_ASAR) return process.env.DSH_ASAR;
   const cands = [];
-  if (process.env.DSH_ASAR) cands.push(process.env.DSH_ASAR);
   if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
     cands.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness', 'resources', 'app.asar'));
   }
   if (process.platform === 'darwin') {
     cands.push('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar');
   }
-  for (const c of cands) if (c && fs.existsSync(c)) return c;
-  return null;
+  const live = cands.find((c) => fs.existsSync(c));
+  if (!live) return null;
+
+  // Prefer a backup sitting next to it: that is the true pre-patch baseline.
+  const backup = live + '.dsh-tray-restart.bak';
+  if (fs.existsSync(backup)) return backup;
+  return live;
 }
 
 function sha256File(p) {
