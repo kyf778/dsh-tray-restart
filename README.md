@@ -40,17 +40,32 @@ DSH 的插件系统（`cordis.patch.yml`）只能组合**后端服务**，而托
 
 需要 Node.js 18+。先**完全退出** DeepSeek Harness（托盘右键 → 退出），否则文件被占用写不进去。
 
-```bash
+安装分两种情况。
+
+**Windows 上推荐用安装脚本**——它会自动处理「应用正在运行导致文件被锁」的问题：
+
+```bat
 git clone https://github.com/kyf778/dsh-tray-restart.git
 cd dsh-tray-restart
+install.cmd
+```
+
+脚本发现 Harness 在运行时会先问你要不要关掉它，打完补丁再问要不要帮你重新打开。
+
+**或者直接用 Node 命令**（需自行先完全退出 Harness）：
+
+```bash
 node index.js apply
 ```
+
+> Windows 在 Harness 运行时**锁住** `resources/app.asar`，所以必须先退出应用（托盘右键 → 退出）再打补丁，否则写不进去。脚本会检测并提示这一点。
 
 看到 `Patched lib/main.js` 后重新打开 DeepSeek Harness，右键托盘图标即可看到「重启 DeepSeek Harness」。
 
 如果应用装在非默认位置：
 
-```bash
+```bat
+install.cmd -Asar "D:\path\to\app.asar"
 node index.js apply --asar "D:\path\to\app.asar"   # 或设环境变量 DSH_ASAR
 ```
 
@@ -58,10 +73,14 @@ node index.js apply --asar "D:\path\to\app.asar"   # 或设环境变量 DSH_ASAR
 
 | 命令 | 作用 |
 | --- | --- |
+| `install.cmd` | 一键安装（自动关闭/重开 Harness） |
+| `uninstall.cmd` | 一键还原 |
 | `node index.js status` | 查看是否已打补丁 |
 | `node index.js apply` | 打补丁（先自动备份，可重复执行） |
 | `node index.js restore` | 从备份还原成原版 |
 | `node index.js verify` | 重新校验 asar 内每个文件的完整性 |
+
+> 如果 PowerShell 提示脚本未签名，那是 Windows 的默认执行策略所致；`install.cmd` / `uninstall.cmd` 已经带上了 `-ExecutionPolicy Bypass`，用它们就不会遇到这个问题。
 
 ## 安全性
 
@@ -92,6 +111,12 @@ node test/run-tests.cjs
 找不到 `app.asar` 时会输出 SKIP 而不是失败。
 
 ## 卸载
+
+```bat
+uninstall.cmd
+```
+
+或先退出 Harness，再手动还原：
 
 ```bash
 node index.js restore
