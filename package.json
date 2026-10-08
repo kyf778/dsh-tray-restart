@@ -1,0 +1,37 @@
+{
+  "name": "dsh-tray-restart",
+  "version": "1.0.0",
+  "description": "Add a \"Restart DeepSeek Harness\" entry to the Windows system tray menu of the DeepSeek Harness desktop app.",
+  "private": true,
+  "type": "commonjs",
+  "license": "MIT",
+  "bin": {
+    "dsh-tray-restart": "./index.js"
+  },
+  "scripts": {
+    "status": "node index.js status",
+    "apply": "node index.js apply",
+    "restore": "node index.js restore",
+    "verify": "node index.js verify",
+    "test": "node test/run-tests.cjs"
+  },
+  "files": [
+    "index.js",
+    "asar.cjs",
+    "patch-def.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "tray",
+    "restart",
+    "electron",
+    "asar",
+    "windows"
+  ]
+}

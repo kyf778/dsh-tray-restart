@@ -1,0 +1,7 @@
+node_modules/
+*.bak
+*.dsh-tray-restart.bak
+*.asar
+!app.asar
+.DS_Store
+Thumbs.db
