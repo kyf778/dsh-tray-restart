@@ -1,5 +1,7 @@
 # DSH tray restart — 托盘一键重启
 
+[English](./README.en.md) | **简体中文**
+
 给 DeepSeek Harness 桌面版（Windows）的系统托盘右键菜单加上一个 **重启**。
 
 原本托盘里只有两项，要重启只能「退出」再手动打开：
