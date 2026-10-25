@@ -94,6 +94,92 @@ function sha256File(p) {
 }
 
 /**
+ * The app version from the packaged root package.json, or null.
+ *
+ * That file starts with a UTF-8 BOM and, in shipped builds, is missing its
+ * closing brace — so a strict JSON.parse is not an option. Read the first
+ * `"version"` field directly instead; the root entry is the app's own manifest,
+ * so the first match is the one we want.
+ */
+function readAppVersion(asar) {
+  try {
+    const fd = fs.openSync(asar, 'r');
+    try {
+      const { header, base } = readHeader(fd);
+      const hit = walk(header.files, '').find((e) => e.path === 'package.json');
+      if (!hit || hit.node.unpacked) return null;
+      const txt = readEntry(fd, base, hit.node).toString('utf8').replace(/^\uFEFF/, '');
+      const m = /"version"\s*:\s*"([^"]+)"/.exec(txt);
+      return m ? m[1] : null;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+function metaPathFor(asar) {
+  return asar + '.dsh-tray-restart.json';
+}
+
+function readMeta(asar) {
+  try {
+    return JSON.parse(fs.readFileSync(metaPathFor(asar), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeMeta(asar, meta) {
+  fs.writeFileSync(metaPathFor(asar), JSON.stringify(meta, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * Ensure the backup next to `asar` is a pristine copy of the CURRENT build.
+ *
+ * An app update replaces app.asar wholesale but leaves the old backup behind.
+ * Trusting that stale file would make `restore` silently downgrade the app to
+ * the previous release, so a backup recorded for a different version is thrown
+ * away and re-created. A backup with no metadata is accepted only when it is
+ * byte-identical to the current asar (the pre-metadata layout).
+ */
+function ensureBackup(asar, appVersion) {
+  const backup = backupPathFor(asar);
+  const meta = readMeta(asar);
+
+  if (fs.existsSync(backup)) {
+    const recorded = meta && meta.appVersion ? meta.appVersion : null;
+    const sameBuild = recorded
+      ? recorded === appVersion
+      : appVersion !== null && sha256File(backup) === sha256File(asar);
+    if (sameBuild) {
+      if (!meta) {
+        writeMeta(asar, {
+          appVersion,
+          backupSha256: sha256File(backup),
+          createdAt: new Date().toISOString(),
+        });
+      }
+      console.log(`Backup already exists for ${appVersion || 'this build'} (keeping it):`, backup);
+      return backup;
+    }
+    console.log(`Backup belongs to ${recorded || 'an unknown build'}, but the app is now ${appVersion || 'unknown'} — re-creating it.`);
+    fs.rmSync(backup, { force: true });
+    fs.rmSync(metaPathFor(asar), { force: true });
+  }
+
+  fs.copyFileSync(asar, backup);
+  writeMeta(asar, {
+    appVersion: appVersion || null,
+    backupSha256: sha256File(backup),
+    createdAt: new Date().toISOString(),
+  });
+  console.log(`Backup for ${appVersion || 'current build'}:`, backup);
+  return backup;
+}
+
+/**
  * 'applied' — every patched fragment is present.
  * 'absent'  — no trace of the patch.
  * 'partial' — marker present but incomplete: refuse to touch it.
@@ -109,7 +195,6 @@ function apply() {
     console.error('Could not find app.asar. Set DSH_ASAR=<full path to app.asar>.');
     process.exit(1);
   }
-  const backup = backupPathFor(asar);
   const src = readTarget(asar);
   if (src === null) {
     console.error(`Could not find ${TARGET} inside ${asar}.`);
@@ -136,12 +221,7 @@ function apply() {
     }
   }
 
-  if (!fs.existsSync(backup)) {
-    fs.copyFileSync(asar, backup);
-    console.log('Backup:', backup);
-  } else {
-    console.log('Backup already exists (keeping it):', backup);
-  }
+  const backup = ensureBackup(asar, readAppVersion(asar));
 
   let cur = src;
   for (const [, before, after] of EDITS) cur = cur.replace(before, after);
@@ -163,7 +243,7 @@ function apply() {
   console.log('Restart DeepSeek Harness for the new tray entry to appear.');
 }
 
-function restore() {
+function restore(force = false) {
   const asar = findAsar();
   if (!asar) { console.error('Could not find app.asar.'); process.exit(1); }
   const backup = backupPathFor(asar);
@@ -171,6 +251,23 @@ function restore() {
     console.error('No backup found at', backup);
     process.exit(1);
   }
+
+  const meta = readMeta(asar);
+  const current = readAppVersion(asar);
+  if (meta && meta.appVersion && current && meta.appVersion !== current) {
+    if (!force) {
+      console.error(`The backup is from ${meta.appVersion}, but the installed app is ${current}.`);
+      console.error('Restoring it would replace the current build with an older one.');
+      console.error('Re-run with --force if that is really what you want.');
+      process.exit(1);
+    }
+    console.log(`WARNING: restoring ${meta.appVersion} over ${current} (--force).`);
+  }
+  if (meta && meta.backupSha256 && sha256File(backup) !== meta.backupSha256) {
+    console.error('The backup file is damaged (hash mismatch); refusing to restore it.');
+    process.exit(1);
+  }
+
   fs.copyFileSync(backup, asar);
   console.log('Restored original app.asar from', backup);
   console.log('Restart DeepSeek Harness.');
@@ -183,10 +280,48 @@ function status() {
   if (src === null) { console.error(`No ${TARGET} inside ${asar}.`); process.exit(1); }
   const state = detect(src);
   const backup = backupPathFor(asar);
+  const meta = readMeta(asar);
+  const hasBackup = fs.existsSync(backup);
   console.log('asar   :', asar);
+  console.log('version:', readAppVersion(asar) || '(unknown)');
   console.log('target :', TARGET);
   console.log('state  :', state);
-  console.log('backup :', fs.existsSync(backup) ? backup : '(none)');
+  console.log('backup :', hasBackup
+    ? backup + (meta && meta.appVersion ? ` (${meta.appVersion})` : '')
+    : '(none)');
+}
+
+/**
+ * Everything needed to tell whether this app build is still patchable: the
+ * version, the patch state, which backup is on disk, and how many times each
+ * anchor occurs (exactly 1 is required). Meant to be pasted into an issue.
+ */
+function diag() {
+  const asar = findAsar();
+  if (!asar) { console.error('Could not find app.asar.'); process.exit(1); }
+  const fd = fs.openSync(asar, 'r');
+  let src;
+  try {
+    const { header, base } = readHeader(fd);
+    const hit = walk(header.files, '').find((e) => e.path === TARGET);
+    if (!hit) { console.error(`No ${TARGET} inside ${asar}.`); process.exit(1); }
+    src = readEntry(fd, base, hit.node).toString('utf8');
+  } finally { fs.closeSync(fd); }
+
+  const meta = readMeta(asar);
+  const backup = backupPathFor(asar);
+  console.log('asar    :', asar);
+  console.log('version :', readAppVersion(asar) || '(unknown)');
+  console.log('state   :', detect(src));
+  console.log('backup  :', fs.existsSync(backup)
+    ? `${backup} (${meta && meta.appVersion ? meta.appVersion : 'unversioned'})`
+    : '(none)');
+  console.log('anchors :');
+  for (const [id, before] of EDITS) {
+    let i = 0, c = 0;
+    while ((i = src.indexOf(before, i)) >= 0) { c++; i++; }
+    console.log(`  ${id.padEnd(12)} ${c}${c === 1 ? '' : '   <-- expected 1'}`);
+  }
 }
 
 /** Re-derive integrity for every packed entry and compare with the header. */
@@ -213,14 +348,22 @@ function verify() {
   console.log('OK');
 }
 
-const cmd = process.argv[2] || 'status';
+const argv = process.argv.slice(2);
+const COMMANDS = ['status', 'apply', 'restore', 'verify', 'diag'];
+// The command is the first bare word; flags (`--force`) and `--asar <path>`
+// may appear before or after it.
+const cmd = argv[0] && !argv[0].startsWith('-')
+  ? argv[0]
+  : (argv.find((a) => COMMANDS.includes(a)) || 'status');
+const force = argv.includes('--force');
 switch (cmd) {
   case 'apply': apply(); break;
-  case 'restore': restore(); break;
+  case 'restore': restore(force); break;
   case 'status': status(); break;
   case 'verify': verify(); break;
+  case 'diag': diag(); break;
   default:
     console.error('Unknown command:', cmd);
-    console.error('Usage: node index.js <status|apply|restore|verify>');
+    console.error('Usage: node index.js <status|apply|restore|verify|diag> [--force] [--asar <path>]');
     process.exit(1);
 }

@@ -93,7 +93,11 @@ if (-not (Test-Writable $asar)) {
 }
 
 Write-Host ''
-& node (Join-Path $root 'index.js') restore --asar $asar
+# -Force also covers the version check: the backup may belong to an older
+# release than the one installed now, and index.js refuses that by default.
+$restoreArgs = @('restore', '--asar', $asar)
+if ($Force) { $restoreArgs += '--force' }
+& node (Join-Path $root 'index.js') @restoreArgs
 if ($LASTEXITCODE -ne 0) { throw "Restore failed (exit $LASTEXITCODE)." }
 
 Write-Host ''

@@ -90,12 +90,21 @@ log('\n[3b] patched header layout (Electron semantics)');
   const strLen = blob.readUInt32LE(4);
   assert('Electron-style header read yields the files table',
     !!JSON.parse(blob.subarray(8, 8 + strLen).toString('utf8')).files);
-  // The invariants must match the pristine original's, not just be self-consistent.
+  // Chrome's Pickle pads a written string to a 4-byte payload boundary, so the
+  // gap between u12 (JSON length) and u8 (payload size) is 4 + pad, where pad
+  // depends on len(JSON) % 4. The patched header re-serialises the files table
+  // and pads it to a multiple of 4 itself, which lands on pad = 0; the shipped
+  // original padded by 1. Demanding equal deltas would only re-test JSON length,
+  // so assert the invariant instead: the payload stays 4-byte aligned and the
+  // padding stays inside Pickle's 0..3 range.
   const orig = fs.readFileSync(original);
-  assert('word layout matches the pristine original',
-    orig.readUInt32LE(4) - orig.readUInt32LE(8) === u4 - u8 &&
-    orig.readUInt32LE(8) - orig.readUInt32LE(12) === u8 - u12,
-    `orig deltas ${orig.readUInt32LE(4) - orig.readUInt32LE(8)}/${orig.readUInt32LE(8) - orig.readUInt32LE(12)} vs patched ${u4 - u8}/${u8 - u12}`);
+  const origPad = orig.readUInt32LE(8) - orig.readUInt32LE(12) - 4;
+  const pad = u8 - u12 - 4;
+  assert('Pickle payload stays 4-byte aligned', u8 % 4 === 0, `u8=${u8} (padding ${pad})`);
+  assert('padding is inside Pickle range 0..3', pad >= 0 && pad <= 3, `pad=${pad}`);
+  assert('padding differs only because the JSON length changed',
+    (origPad === pad) === ((orig.readUInt32LE(12) % 4) === (u12 % 4)),
+    `orig pad=${origPad} (u12=${orig.readUInt32LE(12)}), patched pad=${pad} (u12=${u12})`);
 }
 
 // ── 4. only lib/main.js changed ──────────────────────────────────────────────
@@ -177,6 +186,57 @@ log('\n[10] safety on an unknown version');
   assert('explains why', /occurs 0 times/.test(r.stderr), r.stderr);
   assert('file left untouched', sha256File(t) === before);
   assert('no backup written', !fs.existsSync(t + '.dsh-tray-restart.bak'));
+}
+
+// ── 11. version-stamped backup ───────────────────────────────────────────────
+// An app update replaces app.asar but leaves the old backup in place. Without a
+// version stamp, `restore` would quietly put the previous release back, so the
+// backup must carry the version it belongs to and be rebuilt when that changes.
+log('\n[11] version-stamped backup');
+{
+  const t = path.join(tmp, 'versioned.asar');
+  fs.copyFileSync(original, t);
+  const metaPath = t + '.dsh-tray-restart.json';
+
+  const a1 = runCli(t, 'apply');
+  assert('apply exits 0', a1.status === 0, a1.stderr);
+  assert('apply writes backup metadata', fs.existsSync(metaPath));
+  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  assert('metadata records the app version',
+    typeof meta.appVersion === 'string' && meta.appVersion.length > 0, JSON.stringify(meta));
+  assert('metadata records the backup hash', /^[0-9a-f]{64}$/.test(meta.backupSha256 || ''));
+
+  // Pretend the backup came from an older release, as after an app update.
+  fs.writeFileSync(metaPath, JSON.stringify({ ...meta, appVersion: '0.0.0-old' }, null, 2) + '\n');
+
+  const r1 = runCli(t, 'restore');
+  assert('restore refuses a backup from another version', r1.status !== 0, r1.stdout + r1.stderr);
+  assert('explains the version mismatch', /from 0\.0\.0-old/.test(r1.stderr), r1.stderr);
+  assert('file left untouched by the refusal', /state\s*:\s*applied/.test(runCli(t, 'status').stdout));
+
+  const r2 = runCli(t, 'restore', ['--force']);
+  assert('--force restores anyway', r2.status === 0, r2.stderr);
+
+  const a2 = runCli(t, 'apply');
+  assert('apply rebuilds a stale backup', /re-creating it/.test(a2.stdout), a2.stdout);
+  const meta2 = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  assert('rebuilt backup carries the current version',
+    meta2.appVersion !== '0.0.0-old', JSON.stringify(meta2));
+
+  // A damaged backup must never be written over a live install.
+  fs.writeFileSync(metaPath, JSON.stringify({ ...meta2, backupSha256: '0'.repeat(64) }, null, 2) + '\n');
+  const r3 = runCli(t, 'restore', ['--force']);
+  assert('restore refuses a damaged backup', r3.status !== 0, r3.stdout + r3.stderr);
+  assert('names the damage', /damaged/.test(r3.stderr), r3.stderr);
+
+  // Backups created before the metadata existed have no version stamp: trust
+  // one only when it is byte-identical to the asar it sits next to, and
+  // backfill the metadata instead of copying the 180 MB file again.
+  fs.rmSync(metaPath, { force: true });
+  runCli(t, 'restore', ['--force']);
+  const a3 = runCli(t, 'apply');
+  assert('legacy backup is kept when byte-identical', /keeping it/.test(a3.stdout), a3.stdout);
+  assert('metadata is backfilled', fs.existsSync(metaPath));
 }
 
 // ── cleanup ──────────────────────────────────────────────────────────────────

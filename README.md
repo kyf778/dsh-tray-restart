@@ -75,9 +75,11 @@ node index.js apply --asar "D:\path\to\app.asar"   # 或设环境变量 DSH_ASAR
 | --- | --- |
 | `install.cmd` | 一键安装（自动关闭/重开 Harness） |
 | `uninstall.cmd` | 一键还原 |
-| `node index.js status` | 查看是否已打补丁 |
+| `node index.js status` | 查看补丁状态、当前版本、备份属于哪个版本 |
+| `node index.js diag` | 导出排查信息：版本、状态、四处锚点各命中几次 |
 | `node index.js apply` | 打补丁（先自动备份，可重复执行） |
-| `node index.js restore` | 从备份还原成原版 |
+| `node index.js restore` | 从备份还原成原版（跨版本时默认拒绝） |
+| `node index.js restore --force` | 明知版本不符也强行还原 |
 | `node index.js verify` | 重新校验 asar 内每个文件的完整性 |
 
 > 如果 PowerShell 提示脚本未签名，那是 Windows 的默认执行策略所致；`install.cmd` / `uninstall.cmd` 已经带上了 `-ExecutionPolicy Bypass`，用它们就不会遇到这个问题。
@@ -87,18 +89,28 @@ node index.js apply --asar "D:\path\to\app.asar"   # 或设环境变量 DSH_ASAR
 改的是应用安装目录里的二进制包，所以做了这些防护：
 
 - **先备份再动手**。第一次 `apply` 会把原 `app.asar` 存成 `app.asar.dsh-tray-restart.bak`，`restore` 能一键还原成逐字节一致的原文。
-- **只改一个文件**。重写时其余 11469 个文件原样复制，只替换 `lib/main.js`；测试里逐文件比对哈希来验证这一点。
+- **备份属于哪个版本，会记下来**。备份旁边有个 `app.asar.dsh-tray-restart.json`，记着备份对应的应用版本和备份自身的 SHA-256。应用升级后，旧备份自动作废并重建——否则 `restore` 会把新版本悄悄换回旧版本。
+- **跨版本还原会被拒绝**。`restore` 发现备份的版本和当前安装不一致时会停下，要你显式加 `--force`。
+- **备份损坏不会写回**。还原前先比对 SHA-256，对不上就拒绝，绝不拿一个坏文件覆盖还能用的安装。
+- **只改一个文件**。重写时其余一万多个文件原样复制，只替换 `lib/main.js`；测试里逐文件比对哈希来验证这一点。
 - **锚点必须唯一**。四处改动的匹配串各自只允许出现一次，任何一处对不上就立刻中止、**不写盘**。DSH 升级后如果这段代码变了，脚本会拒绝执行而不是把文件改坏。
 - **重算完整性**。asar 里每个文件都带 `integrity` 记录，脚本改完之后会重新计算。
 - **幂等**。已打过补丁会直接提示，不会重复插入。
 
-验证过的环境：Windows 11 + DeepSeek Harness Desktop **0.2.0-rc.2**（应用版本 44.0.0，`dshBuildCommit` `04f392c`）。
+验证过的环境：
+
+| DeepSeek Harness | 结果 |
+| --- | --- |
+| **0.2.1-rc.3** | 四处锚点唯一命中，全套测试通过 |
+| **0.2.0-rc.2**（应用版本 44.0.0，`dshBuildCommit` `04f392c`） | 最初开发与验证的版本 |
 
 ## 升级 DeepSeek Harness 之后
 
-应用升级会覆盖 `resources/app.asar`，补丁随之失效。**升级后重新跑一次 `node index.js apply` 即可。**
+应用升级会**整体替换** `resources/` 目录：补丁随之失效，连旧的 `app.asar.dsh-tray-restart.bak` 一起被清掉。**升级后重新跑一次 `install.cmd`（或 `node index.js apply`）即可。**
 
-因为锚点机制的存在，如果新版本的 `lib/main.js` 结构变了，脚本会安全地中止并提示你，不会写坏文件——这时到仓库提个 issue 说明版本号即可。
+如果升级没有清掉备份（比如手动覆盖安装），`apply` 也会发现备份记录的版本和当前版本对不上，自动重建备份再打补丁，不会留下一个会误导 `restore` 的旧文件。
+
+因为锚点机制的存在，如果新版本的 `lib/main.js` 结构变了，脚本会安全地中止并提示你，不会写坏文件——这时到仓库提个 issue 说明版本号即可。`node index.js status` 会打印当前版本、补丁状态和备份属于哪个版本，排查时先跑它。
 
 ## 测试
 
@@ -106,7 +118,7 @@ node index.js apply --asar "D:\path\to\app.asar"   # 或设环境变量 DSH_ASAR
 node test/run-tests.cjs
 ```
 
-测试全在临时目录里对 `app.asar` 的**副本**进行，不会碰你装好的应用。覆盖 31 项检查：头部字节往返、补丁前后逐文件哈希比对、完整性、语法、托盘菜单行为（含「关闭中点击不响应」的竞态防护）、幂等、还原逐字节一致、以及锚点失配时的安全中止。
+测试全在临时目录里对 `app.asar` 的**副本**进行，不会碰你装好的应用。覆盖 56 项检查：头部字节往返、Pickle 对齐不变量、补丁前后逐文件哈希比对、完整性、语法、托盘菜单行为（含「关闭中点击不响应」的竞态防护）、幂等、还原逐字节一致、锚点失配时的安全中止，以及备份的版本戳（跨版本还原被拒、过期备份自动重建、损坏备份拒绝写回、旧的无版本备份只在内容一致时被接纳）。
 
 找不到 `app.asar` 时会输出 SKIP 而不是失败。
 
@@ -120,6 +132,12 @@ uninstall.cmd
 
 ```bash
 node index.js restore
+```
+
+如果备份是升级前那个版本，`restore` 会拒绝执行（避免把应用换回旧版本）。确认要用旧备份时加 `--force`：
+
+```bash
+node index.js restore --force
 ```
 
 然后删掉仓库目录即可。

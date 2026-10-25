@@ -70,9 +70,9 @@ function entryHashes(asarPath) {
 }
 
 /** Run the CLI against a specific asar; returns {status, stdout, stderr}. */
-function runCli(asarPath, cmd) {
+function runCli(asarPath, cmd, extra = []) {
   const cp = require('node:child_process');
-  const r = cp.spawnSync(process.execPath, ['--max-old-space-size=4096', path.join(ROOT, 'index.js'), cmd], {
+  const r = cp.spawnSync(process.execPath, ['--max-old-space-size=4096', path.join(ROOT, 'index.js'), cmd, ...extra], {
     env: { ...process.env, DSH_ASAR: asarPath },
     encoding: 'utf8',
   });
