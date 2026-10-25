@@ -84,9 +84,11 @@ Available commands:
 | --- | --- |
 | `install.cmd` | One-click install (closes/reopens Harness for you) |
 | `uninstall.cmd` | One-click revert |
-| `node index.js status` | Show whether the patch is applied |
+| `node index.js status` | Show patch state, the app version, and which version the backup belongs to |
+| `node index.js diag` | Dump a support report: version, state, and how many times each anchor matches |
 | `node index.js apply` | Apply the patch (backs up first, safe to re-run) |
-| `node index.js restore` | Restore from the backup |
+| `node index.js restore` | Restore from the backup (refuses a cross-version backup) |
+| `node index.js restore --force` | Restore even when the backup is from another version |
 | `node index.js verify` | Re-check the integrity of every file in the asar |
 
 > If PowerShell complains about unsigned scripts, that is Windows' default execution policy;
@@ -99,8 +101,16 @@ This modifies a binary bundle in the app's install directory, so it takes these 
 
 - **Back up first.** The first `apply` stores the original `app.asar` as
   `app.asar.dsh-tray-restart.bak`, and `restore` brings back a byte-identical copy.
-- **Touch one file only.** Rewriting copies the other 11,469 files unchanged and replaces only
-  `lib/main.js`; the tests compare per-file hashes to prove it.
+- **The backup knows which build it belongs to.** A sidecar
+  `app.asar.dsh-tray-restart.json` records the app version it was taken from and the backup's
+  own SHA-256. After an app update the stale backup is discarded and rebuilt — otherwise
+  `restore` would quietly swap the current release for the previous one.
+- **A cross-version restore is refused.** `restore` stops when the backup's version differs
+  from the installed one; pass `--force` to override it deliberately.
+- **A damaged backup is never written back.** The SHA-256 is verified first, so a corrupt
+  backup cannot be copied over a working install.
+- **Touch one file only.** Rewriting copies the other 11,469-ish files unchanged and replaces
+  only `lib/main.js`; the tests compare per-file hashes to prove it.
 - **Anchors must be unique.** Each of the four match strings may appear exactly once; if any
   one fails to match, the script aborts immediately and **writes nothing**. If a DSH upgrade
   changes that code, the script refuses to run rather than corrupting the file.
@@ -108,17 +118,27 @@ This modifies a binary bundle in the app's install directory, so it takes these 
   after patching.
 - **Idempotent.** An already-patched file is reported as such instead of being patched twice.
 
-Verified on: Windows 11 + DeepSeek Harness Desktop **0.2.0-rc.2** (app version 44.0.0,
-`dshBuildCommit` `04f392c`).
+Verified on:
+
+| DeepSeek Harness | Result |
+| --- | --- |
+| **0.2.1-rc.3** | all four anchors match exactly once; full suite passes |
+| **0.2.0-rc.2** (app version 44.0.0, `dshBuildCommit` `04f392c`) | the original development target |
 
 ## After upgrading DeepSeek Harness
 
-An app upgrade overwrites `resources/app.asar`, which drops the patch. **Just run
-`node index.js apply` again after upgrading.**
+An app upgrade **replaces `resources/` wholesale**: the patch is gone, and so is the old
+`app.asar.dsh-tray-restart.bak`. **Just run `install.cmd` (or `node index.js apply`) again
+after upgrading.**
+
+If an upgrade leaves the backup behind (a manual overwrite install, say), `apply` notices
+that the backup's recorded version no longer matches and rebuilds it before patching, so no
+misleading file is left for `restore` to trip over.
 
 Thanks to the anchor mechanism, if the new version's `lib/main.js` has a different structure
-the script stops safely and tells you instead of corrupting the file — in that case open an
-issue with the version number.
+the script stops safely and writes nothing — in that case open an issue with the version
+number. `node index.js diag` prints the version, the patch state, the backup's version and
+the anchor match counts, which is exactly what an issue needs.
 
 ## Tests
 
@@ -127,10 +147,12 @@ node test/run-tests.cjs
 ```
 
 The tests all run against a **copy** of `app.asar` in a temp directory and never touch your
-installed app. They cover 31 checks: header byte round-trip, per-file hash comparison before
-and after patching, integrity, syntax, tray menu behaviour (including the race guard that
-ignores clicks while shutting down), idempotency, byte-identical restore, and safe abort on
-anchor mismatch.
+installed app. They cover 56 checks: header byte round-trip, the Pickle alignment invariant,
+per-file hash comparison before and after patching, integrity, syntax, tray menu behaviour
+(including the race guard that ignores clicks while shutting down), idempotency,
+byte-identical restore, safe abort on anchor mismatch, and the version-stamped backup
+(cross-version restore refused, stale backup rebuilt, damaged backup refused, a legacy
+unversioned backup accepted only when it is byte-identical to the asar).
 
 If `app.asar` isn't found, it prints SKIP rather than failing.
 
@@ -144,6 +166,13 @@ Or quit Harness and restore by hand:
 
 ```bash
 node index.js restore
+```
+
+If the backup predates an app upgrade, `restore` refuses to run (that would downgrade the
+app). Add `--force` when you really mean it:
+
+```bash
+node index.js restore --force
 ```
 
 Then delete the repository folder.
