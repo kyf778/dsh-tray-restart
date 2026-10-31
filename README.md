@@ -101,6 +101,7 @@ node index.js apply --asar "D:\path\to\app.asar"   # 或设环境变量 DSH_ASAR
 
 | DeepSeek Harness | 结果 |
 | --- | --- |
+| **0.2.1-rc.5** | 四处锚点唯一命中，全套测试通过（`lib/main.js` 的托盘代码与 rc.3 一致） |
 | **0.2.1-rc.3** | 四处锚点唯一命中，全套测试通过 |
 | **0.2.0-rc.2**（应用版本 44.0.0，`dshBuildCommit` `04f392c`） | 最初开发与验证的版本 |
 

@@ -122,6 +122,7 @@ Verified on:
 
 | DeepSeek Harness | Result |
 | --- | --- |
+| **0.2.1-rc.5** | all four anchors match exactly once; full suite passes (the tray code in `lib/main.js` is unchanged since rc.3) |
 | **0.2.1-rc.3** | all four anchors match exactly once; full suite passes |
 | **0.2.0-rc.2** (app version 44.0.0, `dshBuildCommit` `04f392c`) | the original development target |
 
